@@ -161,34 +161,6 @@ class StoreCreditCore extends ObjectModel
     }
 
     /**
-     * Bind this credit to a customer account. Only unowned credits (gift
-     * cards waiting to be redeemed by whoever received the code) or credits
-     * already owned by this customer can be claimed - entering a code must
-     * never move credit away from another customer's account.
-     *
-     * @param int $idCustomer
-     *
-     * @return bool true when the credit is (now) owned by $idCustomer
-     *
-     * @throws PrestaShopException
-     */
-    public function claimForCustomer(int $idCustomer): bool
-    {
-        if ($idCustomer <= 0) {
-            return false;
-        }
-        $owner = (int)$this->id_customer;
-        if ($owner === $idCustomer) {
-            return true;
-        }
-        if ($owner !== 0) {
-            return false;
-        }
-        $this->id_customer = $idCustomer;
-        return (bool)$this->update();
-    }
-
-    /**
      * @param string $code
      *
      * @return int
@@ -260,10 +232,10 @@ class StoreCreditCore extends ObjectModel
     }
 
     /**
-     * Whether visitors may redeem store credit codes without signing in
-     * (shop setting, off by default). When enabled, an unclaimed code entered
-     * before sign-in is attached to the cart and spent at order validation;
-     * codes already claimed by an account stay bound to that account.
+     * Whether visitors may enter store credit codes without signing in (shop
+     * setting, off by default). It only decides WHO may enter a code: a code
+     * never binds to the account that uses it, so the remaining balance keeps
+     * working for whoever holds the code either way.
      *
      * @return bool
      *
@@ -275,10 +247,14 @@ class StoreCreditCore extends ObjectModel
     }
 
     /**
-     * Spendable total of the credits attached to a cart (guest redemption).
-     * Only unclaimed credits count: once a credit is claimed by an account,
-     * the owner's balance takes over and a stale cart association must not
-     * make the same money spendable twice.
+     * Spendable total of the codes entered into this cart.
+     *
+     * Store credit comes in two shapes. Credit granted to a customer in the
+     * back office belongs to that account and is counted by
+     * getByCustomerId(). A gift card carries no owner: entering its code
+     * attaches it to the cart, spending it leaves it unowned, and the
+     * remaining balance keeps working for whoever holds the code. Only that
+     * second shape counts here, so the same money can never be counted twice.
      *
      * @param int $shopId
      * @param int $cartId
@@ -289,10 +265,7 @@ class StoreCreditCore extends ObjectModel
      */
     public static function getAttachedAmountForCart(int $shopId, int $cartId): float
     {
-        // The setting is the kill switch: turning it off immediately stops
-        // attachments from counting (and, via spendForOrder, from being
-        // spent), including carts that attached a code while it was on.
-        if ($cartId <= 0 || !static::guestRedeemEnabled()) {
+        if ($cartId <= 0) {
             return 0.0;
         }
         // Master connection for the same reason as getByCustomerId(): this
@@ -317,8 +290,9 @@ class StoreCreditCore extends ObjectModel
      * total, and without this booking the balance would never decrease and
      * nothing on the order would show the credit was used.
      *
-     * With guest redemption enabled, unclaimed credits attached to the
-     * order's cart are debited too; those stay unclaimed afterwards.
+     * Gift cards whose code was entered into the order's cart are debited
+     * too; those keep their remaining balance available to whoever holds the
+     * code, because they are never tied to an account.
      *
      * Credits are consumed deterministically: soonest expiry first (credits
      * without an expiry last), then oldest first. Each debit is a single
@@ -349,14 +323,13 @@ class StoreCreditCore extends ObjectModel
             throw new PrestaShopException('Store credit can only be spent by a customer account.');
         }
 
-        // Besides the customer's own claimed credits, unclaimed credits
-        // attached to the order's cart are spendable too (guest redemption:
-        // the code was entered before sign-in). Such credits stay unclaimed
-        // after the spend, so the code keeps working for its holder. Gated on
-        // the same setting as the counting side, so the two never disagree.
+        // Besides the credit that belongs to this customer, the gift cards
+        // whose code was entered into the order's cart are spendable. Those
+        // stay unowned after the spend, so the remaining balance keeps
+        // working for whoever holds the code.
         $spendable = 'c.id_customer = ' . $idCustomer;
         $idCart = (int) $order->id_cart;
-        if ($idCart > 0 && static::guestRedeemEnabled()) {
+        if ($idCart > 0) {
             $spendable = '(' . $spendable . ' OR (c.id_customer = 0 AND c.id_store_credit IN (
                 SELECT csc.id_store_credit FROM `' . _DB_PREFIX_ . 'cart_store_credit` csc WHERE csc.id_cart = ' . $idCart . '
             )))';

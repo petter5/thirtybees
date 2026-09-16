@@ -106,7 +106,7 @@ class AdminOrderPreferencesControllerCore extends AdminController
                     ],
                     'PS_STORE_CREDIT_GUEST'          => [
                         'title'      => $this->l('Allow store credit codes without an account'),
-                        'hint'       => $this->l('Visitors can enter an unclaimed store credit code before signing in; it is spent when the order is placed and any remaining balance keeps working for whoever holds the code. Codes already claimed by an account stay bound to that account.'),
+                        'hint'       => $this->l('Visitors can enter a gift card code before signing in. A code is never tied to the account that uses it, so the remaining balance keeps working for whoever holds the code: another account, a guest, another e-mail address. Credit you grant to a customer in the back office is that customer\'s own balance and can never be claimed with a code.'),
                         'validation' => 'isBool',
                         'cast'       => 'intval',
                         'type'       => 'bool',
