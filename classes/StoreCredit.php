@@ -204,20 +204,119 @@ class StoreCreditCore extends ObjectModel
      */
     public static function getByCustomerId(int $shopId, int $customerId): float
     {
+        if ($customerId <= 0) {
+            return 0.0;
+        }
+        return static::sumSpendable($shopId, 'c.id_customer = ' . $customerId);
+    }
+
+    /**
+     * Whether this credit can be used in the given shop. A code from another
+     * shop would attach to the cart and then pay nothing, so the checkout
+     * refuses it instead of silently applying zero.
+     *
+     * @param int $shopId
+     *
+     * @return bool
+     *
+     * @throws PrestaShopException
+     */
+    public function isValidForShop(int $shopId): bool
+    {
+        return (bool) Db::readOnly()->getValue((new DbQuery())
+            ->select('id_shop')
+            ->from('store_credit_shop')
+            ->where('id_store_credit = ' . (int) $this->id)
+            ->where('id_shop = ' . $shopId)
+        );
+    }
+
+    /**
+     * SQL that tells an owned credit from a gift card. The column is
+     * nullable, so "no owner" is NULL as well as 0; every query has to agree
+     * on that or a card counts in one place and not in the other.
+     *
+     * @param bool $owned
+     *
+     * @return string
+     */
+    protected static function ownerCondition(bool $owned): string
+    {
+        return $owned
+            ? '(c.id_customer IS NOT NULL AND c.id_customer > 0)'
+            : '(c.id_customer IS NULL OR c.id_customer = 0)';
+    }
+
+    /**
+     * SQL for "this credit may be spent today": inside its validity window
+     * and with something left on it. Shared by every query that adds up or
+     * spends credit, so they can never drift apart.
+     *
+     * @return string[]
+     */
+    protected static function spendableConditions(): array
+    {
+        return [
+            'c.date_from <= NOW()',
+            // Dates before 1900 mean "no expiry": the constructor normalizes
+            // 0000-00-00 to null and empty bounds are stored as zero dates.
+            '(c.date_to < "1900-00-00" OR c.date_to >= NOW())',
+            '(c.amount - c.amount_used) > 0',
+        ];
+    }
+
+    /**
+     * @param int $shopId
+     * @param string $whichCredits extra SQL condition selecting the credits
+     *
+     * @return float
+     *
+     * @throws PrestaShopException
+     */
+    protected static function sumSpendable(int $shopId, string $whichCredits): float
+    {
         // Master connection on purpose: this figure decides how much money the
         // checkout may spend, so it must not lag behind a just-booked debit on
         // a replicated setup.
-        $conn = Db::getInstance();
         $sql = (new DbQuery())
             ->select('SUM(c.amount - c.amount_used)')
             ->from('store_credit', 'c')
-            ->innerJoin('store_credit_shop', 'cs', 'c.id_store_credit = cs.id_store_credit AND cs.id_shop = ' . (int)$shopId)
-            ->where('c.id_customer = ' . (int)$customerId)
-            ->where('c.date_from <= NOW()')
-            // Dates before 1900 mean "no expiry": the constructor normalizes
-            // 0000-00-00 to null and empty bounds are stored as zero dates.
-            ->where('(c.date_to < "1900-00-00" OR c.date_to >= NOW())');
-        return (float)$conn->getValue($sql);
+            ->innerJoin('store_credit_shop', 'cs', 'c.id_store_credit = cs.id_store_credit AND cs.id_shop = ' . $shopId)
+            ->where($whichCredits);
+        foreach (static::spendableConditions() as $condition) {
+            $sql->where($condition);
+        }
+        return (float) Db::getInstance()->getValue($sql);
+    }
+
+    /**
+     * Everything this cart may pay with: the customer's own balance plus the
+     * gift cards whose code was entered into the cart. One query, because the
+     * checkout asks for this total many times per page.
+     *
+     * @param int $shopId
+     * @param int $customerId 0 for a visitor who is not signed in
+     * @param int $cartId
+     *
+     * @return float
+     *
+     * @throws PrestaShopException
+     */
+    public static function getSpendableAmount(int $shopId, int $customerId, int $cartId): float
+    {
+        $sources = [];
+        if ($customerId > 0) {
+            $sources[] = 'c.id_customer = ' . $customerId;
+        }
+        if ($cartId > 0) {
+            $sources[] = '(' . static::ownerCondition(false) . ' AND c.id_store_credit IN (
+                SELECT csc.id_store_credit FROM `' . _DB_PREFIX_ . 'cart_store_credit` csc WHERE csc.id_cart = ' . $cartId . '
+            ))';
+        }
+        if (!$sources) {
+            return 0.0;
+        }
+        return static::sumSpendable($shopId, '(' . implode(' OR ', $sources) . ')');
     }
 
 
@@ -265,22 +364,7 @@ class StoreCreditCore extends ObjectModel
      */
     public static function getAttachedAmountForCart(int $shopId, int $cartId): float
     {
-        if ($cartId <= 0) {
-            return 0.0;
-        }
-        // Master connection for the same reason as getByCustomerId(): this
-        // figure decides how much money the checkout may spend.
-        $conn = Db::getInstance();
-        $sql = (new DbQuery())
-            ->select('SUM(c.amount - c.amount_used)')
-            ->from('store_credit', 'c')
-            ->innerJoin('cart_store_credit', 'csc', 'c.id_store_credit = csc.id_store_credit AND csc.id_cart = ' . (int) $cartId)
-            ->innerJoin('store_credit_shop', 'cs', 'c.id_store_credit = cs.id_store_credit AND cs.id_shop = ' . (int) $shopId)
-            ->where('c.id_customer = 0')
-            ->where('c.date_from <= NOW()')
-            // Dates before 1900 mean "no expiry", see getByCustomerId().
-            ->where('(c.date_to < "1900-00-00" OR c.date_to >= NOW())');
-        return (float) $conn->getValue($sql);
+        return static::getSpendableAmount($shopId, 0, $cartId);
     }
 
     /**
@@ -330,23 +414,22 @@ class StoreCreditCore extends ObjectModel
         $spendable = 'c.id_customer = ' . $idCustomer;
         $idCart = (int) $order->id_cart;
         if ($idCart > 0) {
-            $spendable = '(' . $spendable . ' OR (c.id_customer = 0 AND c.id_store_credit IN (
+            $spendable = '(' . $spendable . ' OR (' . static::ownerCondition(false) . ' AND c.id_store_credit IN (
                 SELECT csc.id_store_credit FROM `' . _DB_PREFIX_ . 'cart_store_credit` csc WHERE csc.id_cart = ' . $idCart . '
             )))';
         }
 
         $conn = Db::getInstance();
-        $candidates = $conn->getArray((new DbQuery())
+        $query = (new DbQuery())
             ->select('c.id_store_credit, c.code, c.amount, c.amount_used')
             ->from('store_credit', 'c')
             ->innerJoin('store_credit_shop', 'cs', 'c.id_store_credit = cs.id_store_credit AND cs.id_shop = ' . (int) $order->id_shop)
             ->where($spendable)
-            ->where('c.date_from <= NOW()')
-            // Dates before 1900 mean "no expiry", see getByCustomerId().
-            ->where('(c.date_to < "1900-00-00" OR c.date_to >= NOW())')
-            ->where('(c.amount - c.amount_used) > 0')
-            ->orderBy('IF(c.date_to < "1900-00-00", 1, 0) ASC, c.date_to ASC, c.date_add ASC, c.id_store_credit ASC')
-        );
+            ->orderBy('IF(c.date_to < "1900-00-00", 1, 0) ASC, c.date_to ASC, c.date_add ASC, c.id_store_credit ASC');
+        foreach (static::spendableConditions() as $condition) {
+            $query->where($condition);
+        }
+        $candidates = $conn->getArray($query);
 
         $remaining = $amount;
         $spends = [];

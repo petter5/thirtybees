@@ -20,11 +20,13 @@
 /**
  * Class CartStoreCreditCore
  *
- * Associates an unclaimed store credit code with a cart, so a visitor can
- * enter the code before signing in (guest redemption, enabled with the
- * PS_STORE_CREDIT_GUEST setting). The association only carries weight while
- * the credit is unclaimed: the moment a credit is claimed by an account, the
- * customer balance takes over and stale associations stop counting.
+ * Records which gift card codes were entered into a cart.
+ *
+ * A gift card has no owner: entering its code attaches it here, the cart
+ * counts it, and the spend at order validation leaves it unowned, so the
+ * remaining balance keeps working for whoever holds the code. Credit that
+ * the merchant granted to a customer is that customer's balance instead and
+ * never travels through this table.
  */
 class CartStoreCreditCore extends ObjectModel
 {
@@ -127,6 +129,28 @@ class CartStoreCreditCore extends ObjectModel
             ->where('id_cart = ' . $idCart)
             ->where('id_store_credit = ' . $idStoreCredit)
         );
+    }
+
+    /**
+     * The credits entered into a cart. Used when a cart is copied, so the
+     * codes travel with it.
+     *
+     * @param int $idCart
+     *
+     * @return int[]
+     * @throws PrestaShopException
+     */
+    public static function getCreditIdsForCart(int $idCart): array
+    {
+        if ($idCart <= 0) {
+            return [];
+        }
+        $rows = Db::getInstance()->getArray((new DbQuery())
+            ->select('id_store_credit')
+            ->from('cart_store_credit')
+            ->where('id_cart = ' . $idCart)
+        );
+        return is_array($rows) ? array_map('intval', array_column($rows, 'id_store_credit')) : [];
     }
 
     /**

@@ -885,6 +885,12 @@ class CartCore extends ObjectModel
             return 0;
         }
 
+        // A cart without anything to ship asks for a total without shipping.
+        // Remember what the caller actually asked for: store credit pays for
+        // the whole order, so an all-virtual cart must still have it taken
+        // off its payable total.
+        $storeCreditApplies = ($type == static::BOTH || $type == static::ONLY_STORE_CREDIT);
+        $creditOnFullTotal = ($type == static::BOTH);
         if ($virtual && $type == static::BOTH) {
             $type = static::BOTH_WITHOUT_SHIPPING;
         }
@@ -1120,16 +1126,15 @@ class CartCore extends ObjectModel
         // EUR-granted balance one-to-one.
         if ($orderTotal > 0 && $this->use_store_credit
             && (int)$this->id_currency === (int)Configuration::get('PS_CURRENCY_DEFAULT')) {
-            if ($type == static::BOTH || $type == static::ONLY_STORE_CREDIT) {
-                // Claimed balance of the signed-in customer, plus unclaimed
-                // credits attached to the cart before sign-in (guest
-                // redemption). The two sets cannot overlap: attached credits
-                // only count while unclaimed.
-                $creditAvailable = 0.0;
-                if ((int)$this->id_customer) {
-                    $creditAvailable = StoreCredit::getByCustomerId((int)$this->id_shop, (int)$this->id_customer);
-                }
-                $creditAvailable += StoreCredit::getAttachedAmountForCart((int)$this->id_shop, (int)$this->id);
+            if ($storeCreditApplies) {
+                // The customer's own balance plus the gift cards whose code
+                // was entered into this cart. The two sets cannot overlap: a
+                // gift card has no owner, a balance always has one.
+                $creditAvailable = StoreCredit::getSpendableAmount(
+                    (int)$this->id_shop,
+                    (int)$this->id_customer,
+                    (int)$this->id
+                );
                 // FLOOR to the display precision. The credit balance can hold
                 // sub-precision dust (6-decimal column); rounding UP would
                 // promise more than the balance covers and make the order-time
@@ -1144,7 +1149,7 @@ class CartCore extends ObjectModel
                     max(0, _TB_PRICE_DATABASE_PRECISION_ - (int) $displayPrecision)
                 );
                 $creditUsed = floor($scaled) / $factor;
-                if ($type == static::BOTH) {
+                if ($creditOnFullTotal) {
                     $orderTotal -= $creditUsed;
                 } else {
                     $orderTotal = $creditUsed;
@@ -4163,7 +4168,12 @@ class CartCore extends ObjectModel
         if ($this->use_store_credit) {
             $creditUsed = $this->getOrderTotal(true, static::ONLY_STORE_CREDIT);
             if ($creditUsed > 0.0) {
+                // Credit is a payment, not a taxed discount: it lowers what
+                // is left to pay by the same amount in both displays, so the
+                // tax-excluded total has to follow or the summary stops
+                // adding up for shops that show prices without tax.
                 $baseTotalTaxInc -= $creditUsed;
+                $baseTotalTaxExc -= $creditUsed;
                 $discounts[] = [
                     'id_cart_rule' => -1,
                     'id_discount' => ParentOrderController::STORE_CREDIT_CODE,
@@ -4550,6 +4560,13 @@ class CartCore extends ObjectModel
 
         $conn = Db::getInstance();
         $success = true;
+
+        // Gift card codes live on the cart, not on the customer, so a copy
+        // that leaves them behind silently charges the customer full price.
+        foreach (CartStoreCredit::getCreditIdsForCart((int) $this->id) as $idStoreCredit) {
+            $success = CartStoreCredit::attach((int) $cart->id, (int) $idStoreCredit) && $success;
+        }
+
         $products = $conn->getArray(
             (new DbQuery())
                 ->select('*')
