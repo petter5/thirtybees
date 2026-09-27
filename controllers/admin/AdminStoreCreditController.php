@@ -281,7 +281,7 @@ class AdminStoreCreditControllerCore extends AdminController implements Initiali
                     $customer = new Customer($customerId);
                     $customerName = trim($customer->firstname . ' ' . $customer->lastname);
                 } else {
-                    $customerName = $this->l('Not redeemed codes');
+                    $customerName = $this->l('Gift card, no owner');
                 }
                 $helper->title = sprintf($this->l('Store credits: %s'), $customerName);
             }
@@ -315,7 +315,7 @@ class AdminStoreCreditControllerCore extends AdminController implements Initiali
             ]);
             return '<a href="'.$link.'">' . Tools::safeOutput($value) . "</a>";
         } else {
-            return $this->l('Not redeemed codes');
+            return $this->l('Gift card, no owner');
         }
     }
 
