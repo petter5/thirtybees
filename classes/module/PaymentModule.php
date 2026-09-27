@@ -586,7 +586,12 @@ abstract class PaymentModuleCore extends Module
                     // want for that broken state.
                     if ($storeCreditBudget > 0) {
                         $grossTaxIncl = (float) $this->context->cart->getOrderTotal(true, Cart::BOTH_WITHOUT_STORE_CREDIT, $productList, $idCarrier);
-                        $storeCreditApplied = Tools::roundPrice(min($grossTaxIncl, $storeCreditBudget));
+                        // What the cart takes from credit for this package on
+                        // its own: without the products credit may not pay for
+                        // (actionStoreCreditExcludedTotal), so the budget does
+                        // not land on a package that only holds those.
+                        $packageCredit = (float) $this->context->cart->getOrderTotal(true, Cart::ONLY_STORE_CREDIT, $productList, $idCarrier);
+                        $storeCreditApplied = Tools::roundPrice(min($grossTaxIncl, $packageCredit, $storeCreditBudget));
                         if ($storeCreditApplied > 0) {
                             $order->total_paid_tax_excl = (float) $this->context->cart->getOrderTotal(false, Cart::BOTH_WITHOUT_STORE_CREDIT, $productList, $idCarrier);
                             $order->total_paid_tax_incl = $grossTaxIncl;
