@@ -227,13 +227,22 @@ class SearchCore
             $eligibleProducts[] = $row['id_product'];
         }
 
-        $eligibleProducts2 = [];
+        // Products matching any word; with TB_SEARCH_ALL_WORDS, those matching
+        // every word, unless no product does
+        $anyWord = [];
+        $allWords = null;
         foreach ($intersectArray as $query) {
+            $wordProducts = [];
             foreach ($db->getArray($query) as $row) {
-                $eligibleProducts2[] = $row['id_product'];
+                $wordProducts[] = $row['id_product'];
             }
+            $anyWord = array_merge($anyWord, $wordProducts);
+            $allWords = $allWords === null ? $wordProducts : array_intersect($allWords, $wordProducts);
         }
-        $eligibleProducts = array_unique(array_intersect($eligibleProducts, array_unique($eligibleProducts2)));
+        $matchAll = Configuration::get('TB_SEARCH_ALL_WORDS')
+            ? array_intersect($eligibleProducts, (array) $allWords)
+            : [];
+        $eligibleProducts = array_unique($matchAll ?: array_intersect($eligibleProducts, array_unique($anyWord)));
         if (!count($eligibleProducts)) {
             return ($ajax ? [] : ['total' => 0, 'result' => []]);
         }

@@ -179,6 +179,16 @@ class AdminSearchConfControllerCore extends AdminController
                             $this->l('It checks if the searched term is the exact end of the indexed word.'),
                         ],
                     ],
+                    'TB_SEARCH_ALL_WORDS' => [
+                        'title'      => $this->l('Match all words'),
+                        'validation' => 'isBool',
+                        'cast'       => 'intval',
+                        'type'       => 'bool',
+                        'desc'       => $this->l('Only return products that contain every word of the search query. If no product does, products matching any of the words are returned.'),
+                        'hint'       => [
+                            $this->l('By default, a product matching any one of the words is returned, so adding a word to the query gives more results instead of fewer.'),
+                        ],
+                    ],
                     'TB_SEARCH_SIMILAR' => [
                         'title'      => $this->l('Search for close matches'),
                         'validation' => 'isBool',
